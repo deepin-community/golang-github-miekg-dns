@@ -1,7 +1,6 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Source: https://github.com/miekg/dns
 Upstream-Name: github.com/miekg/dns
-Files-Excluded: vendor/*/
 
 Files: *
 Copyright: 2014 CloudFlare
