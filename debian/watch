@@ -1,4 +1,4 @@
-version=3
+version=4
 
 opts=filenamemangle=s/(?:.*\/)?v?([^\/]+)\.tar\.gz/golang-github-miekg-dns-$1.tar.gz/,\
 dversionmangle=s/\+ds\d*$//,\

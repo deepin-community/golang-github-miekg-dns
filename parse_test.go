@@ -245,8 +245,7 @@ func testTXTRRQuick(t *testing.T) {
 		rrbytes := make([]byte, 0, len(owner)+2+2+4+2+len(rdata))
 		rrbytes = append(rrbytes, owner...)
 		rrbytes = append(rrbytes, typeAndClass...)
-		rrbytes = append(rrbytes, byte(len(rdata)>>8))
-		rrbytes = append(rrbytes, byte(len(rdata)))
+		rrbytes = append(rrbytes, byte(len(rdata)>>8), byte(len(rdata)))
 		rrbytes = append(rrbytes, rdata...)
 		rr, _, err := UnpackRR(rrbytes, 0)
 		if err != nil {
@@ -267,7 +266,7 @@ func testTXTRRQuick(t *testing.T) {
 			return false
 		}
 		if len(rdata) == 0 {
-			// string'ing won't produce any data to parse
+			// stringifying won't produce any data to parse
 			return true
 		}
 		rrString := rr.String()
@@ -341,7 +340,7 @@ func TestParseDirectiveMisc(t *testing.T) {
 
 func TestNSEC(t *testing.T) {
 	nsectests := map[string]string{
-		"nl. IN NSEC3PARAM 1 0 5 30923C44C6CBBB8F":                                                                                                 "nl.\t3600\tIN\tNSEC3PARAM\t1 0 5 30923C44C6CBBB8F",
+		"nl. IN NSEC3PARAM 1 0 5 30923C44C6CBBB8F": "nl.\t3600\tIN\tNSEC3PARAM\t1 0 5 30923C44C6CBBB8F",
 		"p2209hipbpnm681knjnu0m1febshlv4e.nl. IN NSEC3 1 1 5 30923C44C6CBBB8F P90DG1KE8QEAN0B01613LHQDG0SOJ0TA NS SOA TXT RRSIG DNSKEY NSEC3PARAM": "p2209hipbpnm681knjnu0m1febshlv4e.nl.\t3600\tIN\tNSEC3\t1 1 5 30923C44C6CBBB8F P90DG1KE8QEAN0B01613LHQDG0SOJ0TA NS SOA TXT RRSIG DNSKEY NSEC3PARAM",
 		"localhost.dnssex.nl. IN NSEC www.dnssex.nl. A RRSIG NSEC":                                                                                 "localhost.dnssex.nl.\t3600\tIN\tNSEC\twww.dnssex.nl. A RRSIG NSEC",
 		"localhost.dnssex.nl. IN NSEC www.dnssex.nl. A RRSIG NSEC TYPE65534":                                                                       "localhost.dnssex.nl.\t3600\tIN\tNSEC\twww.dnssex.nl. A RRSIG NSEC TYPE65534",
@@ -358,12 +357,29 @@ func TestNSEC(t *testing.T) {
 			t.Errorf("`%s' should be equal to\n`%s', but is     `%s'", i, o, rr.String())
 		}
 	}
+	rr, err := NewRR("nl. IN NSEC3PARAM 1 0 5 30923C44C6CBBB8F")
+	if err != nil {
+		t.Fatal("failed to parse RR: ", err)
+	}
+	if nsec3param, ok := rr.(*NSEC3PARAM); ok {
+		if nsec3param.SaltLength != 8 {
+			t.Fatalf("nsec3param saltlen %d != 8", nsec3param.SaltLength)
+		}
+	} else {
+		t.Fatal("not nsec3 param: ", err)
+	}
 }
 
 func TestParseLOC(t *testing.T) {
 	lt := map[string]string{
 		"SW1A2AA.find.me.uk.	LOC	51 30 12.748 N 00 07 39.611 W 0.00m 0.00m 0.00m 0.00m": "SW1A2AA.find.me.uk.\t3600\tIN\tLOC\t51 30 12.748 N 00 07 39.611 W 0m 0.00m 0.00m 0.00m",
 		"SW1A2AA.find.me.uk.	LOC	51 0 0.0 N 00 07 39.611 W 0.00m 0.00m 0.00m 0.00m": "SW1A2AA.find.me.uk.\t3600\tIN\tLOC\t51 00 0.000 N 00 07 39.611 W 0m 0.00m 0.00m 0.00m",
+		"SW1A2AA.find.me.uk.	LOC	51 30 12.748 N 00 07 39.611 W 0.00m": "SW1A2AA.find.me.uk.\t3600\tIN\tLOC\t51 30 12.748 N 00 07 39.611 W 0m 1m 10000m 10m",
+		// Exercise boundary cases
+		"SW1A2AA.find.me.uk.	LOC	90 0 0.0 N 180 0 0.0 W 42849672.95 90000000.00m 90000000.00m 90000000.00m": "SW1A2AA.find.me.uk.\t3600\tIN\tLOC\t90 00 0.000 N 180 00 0.000 W 42849672.95m 90000000m 90000000m 90000000m",
+		"SW1A2AA.find.me.uk.	LOC	89 59 59.999 N 179 59 59.999 W -100000 90000000.00m 90000000.00m 90000000m": "SW1A2AA.find.me.uk.\t3600\tIN\tLOC\t89 59 59.999 N 179 59 59.999 W -100000m 90000000m 90000000m 90000000m",
+		// use float64 to have enough precision.
+		"example.com. LOC 42 21 43.952 N 71 5 6.344 W -24m 1m 200m 10m": "example.com.\t3600\tIN\tLOC\t42 21 43.952 N 71 05 6.344 W -24m 1m 200m 10m",
 	}
 	for i, o := range lt {
 		rr, err := NewRR(i)
@@ -374,6 +390,90 @@ func TestParseLOC(t *testing.T) {
 		if rr.String() != o {
 			t.Errorf("`%s' should be equal to\n`%s', but is     `%s'", i, o, rr.String())
 		}
+	}
+
+	// Invalid cases (out of range values)
+	lt = map[string]string{ // Pair of (invalid) RDATA and the bad field name
+		// One of the subfields is out of range.
+		"91 0 0.0 N 00 07 39.611 W 0m":   "Latitude",
+		"89 60 0.0 N 00 07 39.611 W 0m":  "Latitude",
+		"89 00 60.0 N 00 07 39.611 W 0m": "Latitude",
+		"1 00 -1 N 00 07 39.611 W 0m":    "Latitude",
+		"0 0 0.0 N 181 00 0.0 W 0m":      "Longitude",
+		"0 0 0.0 N 179 60 0.0 W 0m":      "Longitude",
+		"0 0 0.0 N 179 00 60.0 W 0m":     "Longitude",
+		"0 0 0.0 N 1 00 -1 W 0m":         "Longitude",
+
+		// Each subfield is valid, but resulting latitude would be out of range.
+		"90 01 00.0 N 00 07 39.611 W 0m": "Latitude",
+		"0 0 0.0 N 180 01 0.0 W 0m":      "Longitude",
+	}
+	for rdata, field := range lt {
+		_, err := NewRR(fmt.Sprintf("example.com. LOC %s", rdata))
+		if err == nil || !strings.Contains(err.Error(), field) {
+			t.Errorf("expected error to contain %q, but got %v", field, err)
+		}
+	}
+}
+
+// this tests a subroutine for the LOC RR parser.  It's complicated enough to test separately.
+func TestStringToCm(t *testing.T) {
+	tests := []struct {
+		// Test description: the input token and the expected return values from stringToCm.
+		token string
+		e     uint8
+		m     uint8
+		ok    bool
+	}{
+		{"100", 4, 1, true},
+		{"0100", 4, 1, true}, // leading 0 (allowed)
+		{"100.99", 4, 1, true},
+		{"90000000", 9, 9, true},
+		{"90000000.00", 9, 9, true},
+		{"0", 0, 0, true},
+		{"0.00", 0, 0, true},
+		{"0.01", 0, 1, true},
+		{".01", 0, 1, true}, // empty 'meter' part (allowed)
+		{"0.1", 1, 1, true},
+
+		// out of range (too large)
+		{"90000001", 0, 0, false},
+		{"90000000.01", 0, 0, false},
+
+		// more than 2 digits in 'cmeter' part
+		{"0.000", 0, 0, false},
+		{"0.001", 0, 0, false},
+		{"0.999", 0, 0, false},
+		// with plus or minus sign (disallowed)
+		{"-100", 0, 0, false},
+		{"+100", 0, 0, false},
+		{"0.-10", 0, 0, false},
+		{"0.+10", 0, 0, false},
+		{"0a.00", 0, 0, false}, // invalid string for 'meter' part
+		{".1x", 0, 0, false},   // invalid string for 'cmeter' part
+		{".", 0, 0, false},     // empty 'cmeter' part (disallowed)
+		{"1.", 0, 0, false},    // ditto
+		{"m", 0, 0, false},     // only the "m" suffix
+	}
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.token, func(t *testing.T) {
+			// In all cases the expected result is the same with or without the 'm' suffix.
+			// So we test both cases using the same test code.
+			for _, sfx := range []string{"", "m"} {
+				token := tc.token + sfx
+				e, m, ok := stringToCm(token)
+				if ok != tc.ok {
+					t.Fatal("unexpected validation result")
+				}
+				if m != tc.m {
+					t.Fatalf("Expected %d, got %d", tc.m, m)
+				}
+				if e != tc.e {
+					t.Fatalf("Expected %d, got %d", tc.e, e)
+				}
+			}
+		})
 	}
 }
 
@@ -398,16 +498,16 @@ func TestQuotes(t *testing.T) {
 		`t.example.com. IN TXT "a bc"`: "t.example.com.\t3600\tIN\tTXT\t\"a bc\"",
 		`t.example.com. IN TXT "a
  bc"`: "t.example.com.\t3600\tIN\tTXT\t\"a\\010 bc\"",
-		`t.example.com. IN TXT ""`:                                                           "t.example.com.\t3600\tIN\tTXT\t\"\"",
-		`t.example.com. IN TXT "a"`:                                                          "t.example.com.\t3600\tIN\tTXT\t\"a\"",
-		`t.example.com. IN TXT "aa"`:                                                         "t.example.com.\t3600\tIN\tTXT\t\"aa\"",
-		`t.example.com. IN TXT "aaa" ;`:                                                      "t.example.com.\t3600\tIN\tTXT\t\"aaa\"",
-		`t.example.com. IN TXT "abc" "DEF"`:                                                  "t.example.com.\t3600\tIN\tTXT\t\"abc\" \"DEF\"",
-		`t.example.com. IN TXT "abc" ( "DEF" )`:                                              "t.example.com.\t3600\tIN\tTXT\t\"abc\" \"DEF\"",
-		`t.example.com. IN TXT aaa ;`:                                                        "t.example.com.\t3600\tIN\tTXT\t\"aaa\"",
-		`t.example.com. IN TXT aaa aaa;`:                                                     "t.example.com.\t3600\tIN\tTXT\t\"aaa\" \"aaa\"",
-		`t.example.com. IN TXT aaa aaa`:                                                      "t.example.com.\t3600\tIN\tTXT\t\"aaa\" \"aaa\"",
-		`t.example.com. IN TXT aaa`:                                                          "t.example.com.\t3600\tIN\tTXT\t\"aaa\"",
+		`t.example.com. IN TXT ""`:              "t.example.com.\t3600\tIN\tTXT\t\"\"",
+		`t.example.com. IN TXT "a"`:             "t.example.com.\t3600\tIN\tTXT\t\"a\"",
+		`t.example.com. IN TXT "aa"`:            "t.example.com.\t3600\tIN\tTXT\t\"aa\"",
+		`t.example.com. IN TXT "aaa" ;`:         "t.example.com.\t3600\tIN\tTXT\t\"aaa\"",
+		`t.example.com. IN TXT "abc" "DEF"`:     "t.example.com.\t3600\tIN\tTXT\t\"abc\" \"DEF\"",
+		`t.example.com. IN TXT "abc" ( "DEF" )`: "t.example.com.\t3600\tIN\tTXT\t\"abc\" \"DEF\"",
+		`t.example.com. IN TXT aaa ;`:           "t.example.com.\t3600\tIN\tTXT\t\"aaa\"",
+		`t.example.com. IN TXT aaa aaa;`:        "t.example.com.\t3600\tIN\tTXT\t\"aaa\" \"aaa\"",
+		`t.example.com. IN TXT aaa aaa`:         "t.example.com.\t3600\tIN\tTXT\t\"aaa\" \"aaa\"",
+		`t.example.com. IN TXT aaa`:             "t.example.com.\t3600\tIN\tTXT\t\"aaa\"",
 		"cid.urn.arpa. NAPTR 100 50 \"s\" \"z3950+I2L+I2C\"    \"\" _z3950._tcp.gatech.edu.": "cid.urn.arpa.\t3600\tIN\tNAPTR\t100 50 \"s\" \"z3950+I2L+I2C\" \"\" _z3950._tcp.gatech.edu.",
 		"cid.urn.arpa. NAPTR 100 50 \"s\" \"rcds+I2C\"         \"\" _rcds._udp.gatech.edu.":  "cid.urn.arpa.\t3600\tIN\tNAPTR\t100 50 \"s\" \"rcds+I2C\" \"\" _rcds._udp.gatech.edu.",
 		"cid.urn.arpa. NAPTR 100 50 \"s\" \"http+I2L+I2C+I2R\" \"\" _http._tcp.gatech.edu.":  "cid.urn.arpa.\t3600\tIN\tNAPTR\t100 50 \"s\" \"http+I2L+I2C+I2R\" \"\" _http._tcp.gatech.edu.",
@@ -534,20 +634,24 @@ $TTL 314
 example.com.   DNAME 10 ; TTL=314 after second $TTL
 `
 	reCaseFromComment := regexp.MustCompile(`TTL=(\d+)\s+(.*)`)
-	records := ParseZone(strings.NewReader(zone), "", "")
+	z := NewZoneParser(strings.NewReader(zone), "", "")
 	var i int
-	for record := range records {
+
+	for rr, ok := z.Next(); ok; rr, ok = z.Next() {
 		i++
-		if record.Error != nil {
-			t.Error(record.Error)
+		expected := reCaseFromComment.FindStringSubmatch(z.Comment())
+		if len(expected) != 3 {
+			t.Errorf("regexp didn't match for record %d", i)
 			continue
 		}
-		expected := reCaseFromComment.FindStringSubmatch(record.Comment)
 		expectedTTL, _ := strconv.ParseUint(expected[1], 10, 32)
-		ttl := record.RR.Header().Ttl
+		ttl := rr.Header().Ttl
 		if ttl != uint32(expectedTTL) {
 			t.Errorf("%s: expected TTL %d, got %d", expected[2], expectedTTL, ttl)
 		}
+	}
+	if err := z.Err(); err != nil {
+		t.Error(err)
 	}
 	if i != 10 {
 		t.Errorf("expected %d records, got %d", 5, i)
@@ -587,16 +691,12 @@ func TestRelativeNameErrors(t *testing.T) {
 		},
 	}
 	for _, errorCase := range badZones {
-		entries := ParseZone(strings.NewReader(errorCase.zoneContents), "", "")
-		for entry := range entries {
-			if entry.Error == nil {
-				t.Errorf("%s: expected error, got nil", errorCase.label)
-				continue
-			}
-			err := entry.Error.err
-			if err != errorCase.expectedErr {
-				t.Errorf("%s: expected error `%s`, got `%s`", errorCase.label, errorCase.expectedErr, err)
-			}
+		z := NewZoneParser(strings.NewReader(errorCase.zoneContents), "", "")
+		z.Next()
+		if err := z.Err(); err == nil {
+			t.Errorf("%s: expected error, got nil", errorCase.label)
+		} else if !strings.Contains(err.Error(), errorCase.expectedErr) {
+			t.Errorf("%s: expected error `%s`, got `%s`", errorCase.label, errorCase.expectedErr, err)
 		}
 	}
 }
@@ -703,8 +803,12 @@ func TestRfc1982(t *testing.T) {
 }
 
 func TestEmpty(t *testing.T) {
-	for range ParseZone(strings.NewReader(""), "", "") {
+	z := NewZoneParser(strings.NewReader(""), "", "")
+	for _, ok := z.Next(); ok; _, ok = z.Next() {
 		t.Errorf("should be empty")
+	}
+	if err := z.Err(); err != nil {
+		t.Error("got an error when it shouldn't")
 	}
 }
 
@@ -847,20 +951,25 @@ func TestPX(t *testing.T) {
 
 func TestComment(t *testing.T) {
 	// Comments we must see
-	comments := map[string]bool{"; this is comment 1": true,
-		"; this is comment 4": true, "; this is comment 6": true,
-		"; this is comment 7": true, "; this is comment 8": true}
+	comments := map[string]bool{
+		"; this is comment 1": true,
+		"; this is comment 2": true,
+		"; this is comment 4": true,
+		"; this is comment 6": true,
+		"; this is comment 7": true,
+		"; this is comment 8": true,
+	}
 	zone := `
 foo. IN A 10.0.0.1 ; this is comment 1
 foo. IN A (
-	10.0.0.2 ; this is comment2
+	10.0.0.2 ; this is comment 2
 )
-; this is comment3
+; this is comment 3
 foo. IN A 10.0.0.3
 foo. IN A ( 10.0.0.4 ); this is comment 4
 
 foo. IN A 10.0.0.5
-; this is comment5
+; this is comment 5
 
 foo. IN A 10.0.0.6
 
@@ -868,13 +977,115 @@ foo. IN DNSKEY 256 3 5 AwEAAb+8l ; this is comment 6
 foo. IN NSEC miek.nl. TXT RRSIG NSEC; this is comment 7
 foo. IN TXT "THIS IS TEXT MAN"; this is comment 8
 `
-	for x := range ParseZone(strings.NewReader(zone), ".", "") {
-		if x.Error == nil {
-			if x.Comment != "" {
-				if _, ok := comments[x.Comment]; !ok {
-					t.Errorf("wrong comment %s", x.Comment)
-				}
+	z := NewZoneParser(strings.NewReader(zone), ".", "")
+	for _, ok := z.Next(); ok; _, ok = z.Next() {
+		if z.Comment() != "" {
+			if _, okC := comments[z.Comment()]; !okC {
+				t.Errorf("wrong comment %q", z.Comment())
 			}
+		}
+	}
+	if err := z.Err(); err != nil {
+		t.Error("got an error when it shouldn't")
+	}
+}
+
+func TestZoneParserComments(t *testing.T) {
+	for i, test := range []struct {
+		zone     string
+		comments []string
+	}{
+		{
+			`name. IN SOA  a6.nstld.com. hostmaster.nic.name. (
+			203362132 ; serial
+			5m        ; refresh (5 minutes)
+			5m        ; retry (5 minutes)
+			2w        ; expire (2 weeks)
+			300       ; minimum (5 minutes)
+		) ; y
+. 3600000  IN  NS ONE.MY-ROOTS.NET. ; x`,
+			[]string{"; serial ; refresh (5 minutes) ; retry (5 minutes) ; expire (2 weeks) ; minimum (5 minutes) ; y", "; x"},
+		},
+		{
+			`name. IN SOA  a6.nstld.com. hostmaster.nic.name. (
+			203362132 ; serial
+			5m        ; refresh (5 minutes)
+			5m        ; retry (5 minutes)
+			2w        ; expire (2 weeks)
+			300       ; minimum (5 minutes)
+		) ; y
+. 3600000  IN  NS ONE.MY-ROOTS.NET.`,
+			[]string{"; serial ; refresh (5 minutes) ; retry (5 minutes) ; expire (2 weeks) ; minimum (5 minutes) ; y", ""},
+		},
+		{
+			`name. IN SOA  a6.nstld.com. hostmaster.nic.name. (
+			203362132 ; serial
+			5m        ; refresh (5 minutes)
+			5m        ; retry (5 minutes)
+			2w        ; expire (2 weeks)
+			300       ; minimum (5 minutes)
+		)
+. 3600000  IN  NS ONE.MY-ROOTS.NET.`,
+			[]string{"; serial ; refresh (5 minutes) ; retry (5 minutes) ; expire (2 weeks) ; minimum (5 minutes)", ""},
+		},
+		{
+			`name. IN SOA  a6.nstld.com. hostmaster.nic.name. (
+			203362132 ; serial
+			5m        ; refresh (5 minutes)
+			5m        ; retry (5 minutes)
+			2w        ; expire (2 weeks)
+			300       ; minimum (5 minutes)
+		)
+. 3600000  IN  NS ONE.MY-ROOTS.NET. ; x`,
+			[]string{"; serial ; refresh (5 minutes) ; retry (5 minutes) ; expire (2 weeks) ; minimum (5 minutes)", "; x"},
+		},
+		{
+			`name. IN SOA  a6.nstld.com. hostmaster.nic.name. (
+			203362132 ; serial
+			5m        ; refresh (5 minutes)
+			5m        ; retry (5 minutes)
+			2w        ; expire (2 weeks)
+			300       ; minimum (5 minutes)
+		)`,
+			[]string{"; serial ; refresh (5 minutes) ; retry (5 minutes) ; expire (2 weeks) ; minimum (5 minutes)"},
+		},
+		{
+			`. 3600000  IN  NS ONE.MY-ROOTS.NET. ; x`,
+			[]string{"; x"},
+		},
+		{
+			`. 3600000  IN  NS ONE.MY-ROOTS.NET.`,
+			[]string{""},
+		},
+		{
+			`. 3600000  IN  NS ONE.MY-ROOTS.NET. ;;x`,
+			[]string{";;x"},
+		},
+	} {
+		r := strings.NewReader(test.zone)
+
+		var j int
+		z := NewZoneParser(r, "", "")
+		for rr, ok := z.Next(); ok; rr, ok = z.Next() {
+			if j >= len(test.comments) {
+				t.Fatalf("too many records for zone %d at %d record, expected %d", i, j+1, len(test.comments))
+			}
+
+			if z.Comment() != test.comments[j] {
+				t.Errorf("invalid comment for record %d:%d %v", i, j, rr)
+				t.Logf("expected %q", test.comments[j])
+				t.Logf("got      %q", z.Comment())
+			}
+
+			j++
+		}
+
+		if err := z.Err(); err != nil {
+			t.Fatal(err)
+		}
+
+		if j != len(test.comments) {
+			t.Errorf("too few records for zone %d, got %d, expected %d", i, j, len(test.comments))
 		}
 	}
 }
@@ -928,8 +1139,8 @@ func TestTXT(t *testing.T) {
 		if rr.String() != `_raop._tcp.local.	60	IN	TXT	"single value"` {
 			t.Error("bad representation of TXT record:", rr.String())
 		}
-		if rr.len() != 28+1+12 {
-			t.Error("bad size of serialized record:", rr.len())
+		if Len(rr) != 28+1+12 {
+			t.Error("bad size of serialized record:", Len(rr))
 		}
 	}
 
@@ -948,8 +1159,8 @@ func TestTXT(t *testing.T) {
 		if rr.String() != `_raop._tcp.local.	60	IN	TXT	"a=1" "b=2" "c=3" "d=4"` {
 			t.Error("bad representation of TXT multi value record:", rr.String())
 		}
-		if rr.len() != 28+1+3+1+3+1+3+1+3 {
-			t.Error("bad size of serialized multi value record:", rr.len())
+		if Len(rr) != 28+1+3+1+3+1+3+1+3 {
+			t.Error("bad size of serialized multi value record:", Len(rr))
 		}
 	}
 
@@ -968,8 +1179,8 @@ func TestTXT(t *testing.T) {
 		if rr.String() != `_raop._tcp.local.	60	IN	TXT	""` {
 			t.Error("bad representation of empty-string TXT record:", rr.String())
 		}
-		if rr.len() != 28+1 {
-			t.Error("bad size of serialized record:", rr.len())
+		if Len(rr) != 28+1 {
+			t.Error("bad size of serialized record:", Len(rr))
 		}
 	}
 
@@ -998,8 +1209,8 @@ func TestTypeXXXX(t *testing.T) {
 		t.Errorf("this should not work, for TYPE655341")
 	}
 	_, err = NewRR("example.com IN TYPE1 \\# 4 0a000001")
-	if err == nil {
-		t.Errorf("this should not work")
+	if err != nil {
+		t.Errorf("failed to parse TYPE1 RR: %v", err)
 	}
 }
 
@@ -1102,9 +1313,8 @@ func TestNewPrivateKey(t *testing.T) {
 	algorithms := []algorithm{
 		{ECDSAP256SHA256, 256},
 		{ECDSAP384SHA384, 384},
-		{RSASHA1, 1024},
-		{RSASHA256, 2048},
-		{DSA, 1024},
+		{RSASHA1, 512},
+		{RSASHA256, 512},
 		{ED25519, 256},
 	}
 
@@ -1424,6 +1634,91 @@ func TestParseCSYNC(t *testing.T) {
 	}
 }
 
+func TestParseSVCB(t *testing.T) {
+	svcbs := map[string]string{
+		`example.com. 3600 IN SVCB 0 cloudflare.com.`: `example.com.	3600	IN	SVCB	0 cloudflare.com.`,
+		`example.com. 3600 IN SVCB 65000 cloudflare.com. alpn=h2 ipv4hint=3.4.3.2`: `example.com.	3600	IN	SVCB	65000 cloudflare.com. alpn="h2" ipv4hint="3.4.3.2"`,
+		`example.com. 3600 IN SVCB 65000 cloudflare.com. key65000=4\ 3 key65001="\" " key65002 key65003= key65004="" key65005== key65006==\"\" key65007=\254 key65008=\032`: `example.com.	3600	IN	SVCB	65000 cloudflare.com. key65000="4\ 3" key65001="\"\ " key65002="" key65003="" key65004="" key65005="=" key65006="=\"\"" key65007="\254" key65008="\ "`,
+		// Explained in svcb.go "In AliasMode, records SHOULD NOT include any SvcParams,"
+		`example.com. 3600 IN SVCB 0 no-default-alpn`: `example.com.	3600	IN	SVCB	0 no-default-alpn.`,
+		// From the specification
+		`example.com.   HTTPS   0 foo.example.com.`: `example.com.	3600	IN	HTTPS	0 foo.example.com.`,
+		`example.com.   SVCB   1 .`: `example.com.	3600	IN	SVCB	1 .`,
+		`example.com.   SVCB   16 foo.example.com. port=53`: `example.com.	3600	IN	SVCB	16 foo.example.com. port="53"`,
+		`example.com.   SVCB   1 foo.example.com. key667=hello`: `example.com.	3600	IN	SVCB	1 foo.example.com. key667="hello"`,
+		`example.com.   SVCB   1 foo.example.com. key667="hello\210qoo"`: `example.com.	3600	IN	SVCB	1 foo.example.com. key667="hello\210qoo"`,
+		`example.com.   SVCB   1 foo.example.com. ipv6hint="2001:db8::1,2001:db8::53:1"`: `example.com.	3600	IN	SVCB	1 foo.example.com. ipv6hint="2001:db8::1,2001:db8::53:1"`,
+		`example.com.   SVCB   1 example.com. ipv6hint="2001:db8::198.51.100.100"`: `example.com.	3600	IN	SVCB	1 example.com. ipv6hint="2001:db8::c633:6464"`,
+		`example.com.   SVCB   16 foo.example.org. alpn=h2,h3-19 mandatory=ipv4hint,alpn ipv4hint=192.0.2.1`: `example.com.	3600	IN	SVCB	16 foo.example.org. alpn="h2,h3-19" mandatory="ipv4hint,alpn" ipv4hint="192.0.2.1"`,
+		`example.com.   SVCB   16 foo.example.org. alpn="f\\\\oo\\,bar,h2"`: `example.com.	3600	IN	SVCB	16 foo.example.org. alpn="f\\\092oo\\\044bar,h2"`,
+		`example.com.   SVCB   16 foo.example.org. alpn=f\\\092oo\092,bar,h2`: `example.com.	3600	IN	SVCB	16 foo.example.org. alpn="f\\\092oo\\\044bar,h2"`,
+		// From draft-ietf-add-ddr-06
+		`_dns.example.net. SVCB 1 example.net. alpn=h2 dohpath=/dns-query{?dns}`: `_dns.example.net.	3600	IN	SVCB	1 example.net. alpn="h2" dohpath="/dns-query{?dns}"`,
+		`_dns.example.net. SVCB 1 example.net. alpn=h2 dohpath=/dns\045query{\?dns}`: `_dns.example.net.	3600	IN	SVCB	1 example.net. alpn="h2" dohpath="/dns-query{?dns}"`,
+	}
+	for s, o := range svcbs {
+		rr, err := NewRR(s)
+		if err != nil {
+			t.Error("failed to parse RR: ", err)
+			continue
+		}
+		if rr.String() != o {
+			t.Errorf("`%s' should be equal to\n`%s', but is     `%s'", s, o, rr.String())
+		}
+	}
+}
+
+func TestParseBadSVCB(t *testing.T) {
+	header := `example.com. 3600 IN HTTPS `
+	evils := []string{
+		`65536 . no-default-alpn`, // bad priority
+		`1 ..`,                    // bad domain
+		`1 . no-default-alpn=1`,   // value illegal
+		`1 . key`,                 // invalid key
+		`1 . key=`,                // invalid key
+		`1 . =`,                   // invalid key
+		`1 . ==`,                  // invalid key
+		`1 . =a`,                  // invalid key
+		`1 . ""`,                  // invalid key
+		`1 . ""=`,                 // invalid key
+		`1 . "a"`,                 // invalid key
+		`1 . "a"=`,                // invalid key
+		`1 . key1=`,               // we know that key
+		`1 . key65535`,            // key reserved
+		`1 . key065534`,           // key can't be padded
+		`1 . key65534="f`,         // unterminated value
+		`1 . key65534="`,          // unterminated value
+		`1 . key65534=\2`,         // invalid numeric escape
+		`1 . key65534=\24`,        // invalid numeric escape
+		`1 . key65534=\256`,       // invalid numeric escape
+		`1 . key65534=\`,          // invalid numeric escape
+		`1 . key65534=""alpn`,     // zQuote ending needs whitespace
+		`1 . key65534="a"alpn`,    // zQuote ending needs whitespace
+		`1 . ipv6hint=1.1.1.1`,    // not ipv6
+		`1 . ipv6hint=1:1:1:1`,    // not ipv6
+		`1 . ipv6hint=a`,          // not ipv6
+		`1 . ipv6hint=`,           // empty ipv6
+		`1 . ipv4hint=1.1.1.1.1`,  // not ipv4
+		`1 . ipv4hint=::fc`,       // not ipv4
+		`1 . ipv4hint=..11`,       // not ipv4
+		`1 . ipv4hint=a`,          // not ipv4
+		`1 . ipv4hint=`,           // empty ipv4
+		`1 . port=`,               // empty port
+		`1 . echconfig=YUd`,       // bad base64
+		`1 . alpn=h\`,             // unterminated escape
+		`1 . alpn=h2\\.h3`,        // comma-separated list with bad character
+		`1 . alpn=h2,,h3`,         // empty protocol identifier
+		`1 . alpn=h3,`,            // final protocol identifier empty
+	}
+	for _, o := range evils {
+		_, err := NewRR(header + o)
+		if err == nil {
+			t.Error("failed to reject invalid RR: ", header+o)
+			continue
+		}
+	}
+}
+
 func TestParseBadNAPTR(t *testing.T) {
 	// Should look like: mplus.ims.vodafone.com.	3600	IN	NAPTR	10 100 "S" "SIP+D2U" "" _sip._udp.mplus.ims.vodafone.com.
 	naptr := `mplus.ims.vodafone.com.	3600	IN	NAPTR	10 100 S SIP+D2U  _sip._udp.mplus.ims.vodafone.com.`
@@ -1460,6 +1755,263 @@ func TestBad(t *testing.T) {
 		}
 		if _, err = NewRR(s); err == nil {
 			t.Errorf("correctly parsed %q", s)
+		}
+	}
+}
+
+func TestNULLRecord(t *testing.T) {
+	// packet captured from iodine
+	packet := `8116840000010001000000000569627a6c700474657374046d69656b026e6c00000a0001c00c000a0001000000000005497f000001`
+	data, _ := hex.DecodeString(packet)
+	msg := new(Msg)
+	err := msg.Unpack(data)
+	if err != nil {
+		t.Fatalf("Failed to unpack NULL record")
+	}
+	if _, ok := msg.Answer[0].(*NULL); !ok {
+		t.Fatalf("Expected packet to contain NULL record")
+	}
+}
+
+func TestParseAPL(t *testing.T) {
+	tests := []struct {
+		name   string
+		in     string
+		expect string
+	}{
+		{
+			"v4",
+			". APL 1:192.0.2.0/24",
+			".\t3600\tIN\tAPL\t1:192.0.2.0/24",
+		},
+		{
+			"v6",
+			". APL 2:2001:db8::/32",
+			".\t3600\tIN\tAPL\t2:2001:db8::/32",
+		},
+		{
+			"null v6",
+			". APL 2:::/0",
+			".\t3600\tIN\tAPL\t2:::/0",
+		},
+		{
+			"null v4",
+			". APL 1:0.0.0.0/0",
+			".\t3600\tIN\tAPL\t1:0.0.0.0/0",
+		},
+		{
+			"full v6",
+			". APL 2:::/0",
+			".\t3600\tIN\tAPL\t2:::/0",
+		},
+		{
+			"full v4",
+			". APL 1:192.0.2.1/32",
+			".\t3600\tIN\tAPL\t1:192.0.2.1/32",
+		},
+		{
+			"full v6",
+			". APL 2:2001:0db8:d2b4:b6ba:50db:49cc:a8d1:5bb1/128",
+			".\t3600\tIN\tAPL\t2:2001:db8:d2b4:b6ba:50db:49cc:a8d1:5bb1/128",
+		},
+		{
+			"v4in6",
+			". APL 2:::ffff:192.0.2.0/120",
+			".\t3600\tIN\tAPL\t2:::ffff:192.0.2.0/120",
+		},
+		{
+			"v4in6 v6 syntax",
+			". APL 2:::ffff:c000:0200/120",
+			".\t3600\tIN\tAPL\t2:::ffff:192.0.2.0/120",
+		},
+		{
+			"negate",
+			". APL !1:192.0.2.0/24",
+			".\t3600\tIN\tAPL\t!1:192.0.2.0/24",
+		},
+		{
+			"multiple",
+			". APL 1:192.0.2.0/24 !1:192.0.2.1/32 2:2001:db8::/32 !2:2001:db8:1::0/48",
+			".\t3600\tIN\tAPL\t1:192.0.2.0/24 !1:192.0.2.1/32 2:2001:db8::/32 !2:2001:db8:1::/48",
+		},
+		{
+			"no address",
+			". APL",
+			".\t3600\tIN\tAPL\t",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rr, err := NewRR(tc.in)
+			if err != nil {
+				t.Fatalf("failed to parse RR: %s", err)
+			}
+
+			got := rr.String()
+			if got != tc.expect {
+				t.Errorf("expected %q, got %q", tc.expect, got)
+			}
+		})
+	}
+}
+
+func TestParseAPLErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+	}{
+		{
+			"unexpected",
+			`. APL ""`,
+		},
+		{
+			"unrecognized family",
+			". APL 3:0.0.0.0/0",
+		},
+		{
+			"malformed family",
+			". APL foo:0.0.0.0/0",
+		},
+		{
+			"malformed address",
+			". APL 1:192.0.2/16",
+		},
+		{
+			"extra bits",
+			". APL 2:2001:db8::/0",
+		},
+		{
+			"address mismatch v2",
+			". APL 1:2001:db8::/64",
+		},
+		{
+			"address mismatch v6",
+			". APL 2:192.0.2.1/32",
+		},
+		{
+			"no prefix",
+			". APL 1:192.0.2.1",
+		},
+		{
+			"no family",
+			". APL 0.0.0.0/0",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := NewRR(tc.in)
+			if err == nil {
+				t.Fatal("expected error, got none")
+			}
+		})
+	}
+}
+
+func TestUnpackRRWithHeaderInvalidLengths(t *testing.T) {
+	rr, err := NewRR("test.example.org. 300 IN SSHFP 1 2 BC6533CDC95A79078A39A56EA7635984ED655318ADA9B6159E30723665DA95BB")
+	if err != nil {
+		t.Fatalf("failed to parse SSHFP record: %v", err)
+	}
+
+	buf := make([]byte, Len(rr))
+	headerEnd, end, err := packRR(rr, buf, 0, compressionMap{}, false)
+	if err != nil {
+		t.Fatalf("failed to pack A record: %v", err)
+	}
+
+	rr.Header().Rdlength = uint16(end - headerEnd)
+	for _, off := range []int{
+		-1,
+		end + 1,
+		1<<16 - 1,
+	} {
+		_, _, err := UnpackRRWithHeader(*rr.Header(), buf, off)
+		if de, ok := err.(*Error); !ok || de.err != "bad off" {
+			t.Errorf("UnpackRRWithHeader with bad offset (%d) returned wrong or no error: %v", off, err)
+		}
+	}
+
+	for _, rdlength := range []uint16{
+		uint16(end - headerEnd + 1),
+		uint16(end),
+		1<<16 - 1,
+	} {
+		rr.Header().Rdlength = rdlength
+
+		_, _, err := UnpackRRWithHeader(*rr.Header(), buf, headerEnd)
+		if de, ok := err.(*Error); !ok || de.err != "bad rdlength" {
+			t.Errorf("UnpackRRWithHeader with bad rdlength (%d) returned wrong or no error: %v", rdlength, err)
+		}
+	}
+}
+
+func TestParseZONEMD(t *testing.T) {
+	// Uses examples from https://tools.ietf.org/html/rfc8976
+	dt := map[string]string{
+		// Simple Zone
+		`example.	86400	IN	ZONEMD	2018031900 1 1 (
+										c68090d90a7aed71
+										6bc459f9340e3d7c
+										1370d4d24b7e2fc3
+										a1ddc0b9a87153b9
+										a9713b3c9ae5cc27
+										777f98b8e730044c )
+		`: "example.\t86400\tIN\tZONEMD\t2018031900 1 1 c68090d90a7aed716bc459f9340e3d7c1370d4d24b7e2fc3a1ddc0b9a87153b9a9713b3c9ae5cc27777f98b8e730044c",
+		// Complex Zone
+		`example.	86400	IN	ZONEMD	2018031900 1 1 (
+										a3b69bad980a3504
+										e1cffcb0fd6397f9
+										3848071c93151f55
+										2ae2f6b1711d4bd2
+										d8b39808226d7b9d
+										b71e34b72077f8fe )
+		`: "example.\t86400\tIN\tZONEMD\t2018031900 1 1 a3b69bad980a3504e1cffcb0fd6397f93848071c93151f552ae2f6b1711d4bd2d8b39808226d7b9db71e34b72077f8fe",
+		// Multiple Digests Zone
+		`example.	86400	IN	ZONEMD	2018031900 1 1 (
+										62e6cf51b02e54b9
+										b5f967d547ce4313
+										6792901f9f88e637
+										493daaf401c92c27
+										9dd10f0edb1c56f8
+										080211f8480ee306 )
+		`: "example.\t86400\tIN\tZONEMD\t2018031900 1 1 62e6cf51b02e54b9b5f967d547ce43136792901f9f88e637493daaf401c92c279dd10f0edb1c56f8080211f8480ee306",
+		`example.	86400	IN	ZONEMD	2018031900 1 2 (
+										08cfa1115c7b948c
+										4163a901270395ea
+										226a930cd2cbcf2f
+										a9a5e6eb85f37c8a
+										4e114d884e66f176
+										eab121cb02db7d65
+										2e0cc4827e7a3204
+										f166b47e5613fd27 )
+		`: "example.\t86400\tIN\tZONEMD\t2018031900 1 2 08cfa1115c7b948c4163a901270395ea226a930cd2cbcf2fa9a5e6eb85f37c8a4e114d884e66f176eab121cb02db7d652e0cc4827e7a3204f166b47e5613fd27",
+		`example.	86400	IN	ZONEMD	2018031900 1 240 (
+										e2d523f654b9422a
+										96c5a8f44607bbee )
+		`: "example.	86400	IN	ZONEMD	2018031900 1 240 e2d523f654b9422a96c5a8f44607bbee",
+		`example.	86400	IN	ZONEMD	2018031900 241 1 (
+										e1846540e33a9e41
+										89792d18d5d131f6
+										05fc283e )
+		`: "example.	86400	IN	ZONEMD	2018031900 241 1 e1846540e33a9e4189792d18d5d131f605fc283e",
+		// URI.ARPA zone
+		`uri.arpa.		3600	IN		ZONEMD	2018100702 1 1 (
+			0dbc3c4dbfd75777c12ca19c337854b1577799901307c482e9d91d5d15
+			cd934d16319d98e30c4201cf25a1d5a0254960 )`: "uri.arpa.\t3600\tIN\tZONEMD\t2018100702 1 1 0dbc3c4dbfd75777c12ca19c337854b1577799901307c482e9d91d5d15cd934d16319d98e30c4201cf25a1d5a0254960",
+		// ROOT-SERVERS.NET Zone
+		`root-servers.net.     3600000 IN  ZONEMD  2018091100 1 1 (
+			f1ca0ccd91bd5573d9f431c00ee0101b2545c97602be0a97
+			8a3b11dbfc1c776d5b3e86ae3d973d6b5349ba7f04340f79 )
+		`: "root-servers.net.\t3600000\tIN\tZONEMD\t2018091100 1 1 f1ca0ccd91bd5573d9f431c00ee0101b2545c97602be0a978a3b11dbfc1c776d5b3e86ae3d973d6b5349ba7f04340f79",
+	}
+	for i, o := range dt {
+		rr, err := NewRR(i)
+		if err != nil {
+			t.Error("failed to parse RR: ", err)
+			continue
+		}
+		if rr.String() != o {
+			t.Errorf("`%s' should be equal to\n`%s', but is     `%s'", i, o, rr.String())
 		}
 	}
 }

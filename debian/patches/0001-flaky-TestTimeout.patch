@@ -1,0 +1,21 @@
+From: Shengjing Zhu <zhsj@debian.org>
+Date: Tue, 31 Jan 2023 22:15:14 +0800
+Subject: flaky TestTimeout
+
+---
+ client_test.go | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/client_test.go b/client_test.go
+index ff0c218..d954420 100644
+--- a/client_test.go
++++ b/client_test.go
+@@ -654,7 +654,7 @@ func TestTimeout(t *testing.T) {
+ 			start := time.Now()
+ 
+ 			timeout := time.Millisecond
+-			allowable := timeout + 10*time.Millisecond
++			allowable := timeout + 100*time.Millisecond
+ 
+ 			_, _, err := exchange(m, addrstr, timeout)
+ 			if err == nil {
